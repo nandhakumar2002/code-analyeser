@@ -1,0 +1,27 @@
+{
+  "name": "CodeReel — Code Debugger & Analyser",
+  "short_name": "CodeReel",
+  "description": "Trace code line by line with live variable state, data-structure visualisations, Big-O complexity analysis and algorithm pattern detection.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#16181d",
+  "theme_color": "#16181d",
+  "categories": ["developer", "education", "productivity"],
+  "lang": "en",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}
