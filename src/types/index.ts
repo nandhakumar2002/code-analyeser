@@ -9,12 +9,22 @@ export interface VariableState {
   kind?: string;
   className?: string;
   changed?: boolean;
+  /** Full untruncated value for accordion expansion */
+  fullValue?: any;
+  /** Full untruncated display string */
+  fullDisplay?: string;
 }
 
 export interface CallFrame {
   name: string;
   line: number;
   args?: string;
+  /** Type of call frame: 'sync' | 'microtask' | 'macrotask' */
+  frameType?: 'sync' | 'microtask' | 'macrotask';
+  /** For async frames: the source that scheduled this (e.g., 'Promise.then', 'setTimeout') */
+  asyncSource?: string;
+  /** Internal callback for queue processing (not serialized) */
+  callback?: () => void;
 }
 
 export type DataStructureView =
@@ -90,6 +100,10 @@ export interface ExecutionStep {
   line: number;
   variables: VariableState[];
   callStack?: CallFrame[];
+  /** Microtask queue at this step */
+  microtaskQueue?: CallFrame[];
+  /** Macrotask queue at this step */
+  macrotaskQueue?: CallFrame[];
   conditionResult?: boolean;
   loopInfo?: {
     type: string;

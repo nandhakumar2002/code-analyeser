@@ -1297,23 +1297,32 @@ function completeLineMetrics(metrics: LineMetric[], lines: string[]): LineMetric
   const byLine = new Map<number, LineMetric>();
   for (const m of metrics) byLine.set(m.line, m);
   const result: LineMetric[] = [];
+  let lastExecutedLine = 0;
   for (let i = 0; i < lines.length; i++) {
     const line = i + 1;
     const existing = byLine.get(line);
+    const trimmed = lines[i].trim();
+    const isClosingBrace = /^[\}\]\),;]*$/.test(trimmed) && trimmed.length > 0;
+    
     if (existing) {
       result.push({ ...existing, code: existing.code ?? lines[i], executed: true });
-    } else if (lines[i].trim()) {
+      lastExecutedLine = line;
+    } else if (trimmed) {
+      // If this line is just a closing brace and the previous line was executed,
+      // consider it executed too (it's part of the same block)
+      const executed = isClosingBrace && lastExecutedLine > 0 && lastExecutedLine < line;
       result.push({
         line,
-        hits: 0,
+        hits: executed ? 1 : 0,
         executionTimeMs: 0,
         executionTimeSec: 0,
         avgTimeMs: 0,
         storageSizeBytes: 0,
         storageSizeKB: 0,
         code: lines[i],
-        executed: false,
+        executed,
       });
+      if (executed) lastExecutedLine = line;
     }
   }
   return result;

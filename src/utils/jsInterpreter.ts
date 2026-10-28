@@ -289,6 +289,10 @@ export class JsInterpreter {
   outputs: string[] = [];
   private currentScope: Scope | null = null;
   private callStack: CallFrame[] = [];
+  /** Microtask queue (Promise callbacks) */
+  microtaskQueue: CallFrame[] = [];
+  /** Macrotask queue (setTimeout, setInterval, etc.) */
+  macrotaskQueue: CallFrame[] = [];
   private loopStack: LoopFrame[] = [];
   private maxSteps: number;
   private timeoutMs: number;
@@ -315,6 +319,77 @@ export class JsInterpreter {
     this.maxSteps = options.maxSteps ?? 20000;
     this.timeoutMs = options.timeoutMs ?? 5000;
     this.maxDepth = options.maxDepth ?? 200;
+  }
+
+  /* ---------------------------- queue processing ---------------------------- */
+
+  /** Process all queued microtasks (Promise callbacks) */
+  private processMicrotaskQueue(): void {
+    while (this.microtaskQueue.length > 0) {
+      const task = this.microtaskQueue.shift()!;
+      try {
+        // Execute the microtask callback
+        task.callback?.();
+      } catch (e) {
+        // Record error but continue processing queue
+        this.steps.push({
+          line: task.line || this.lastRecordLine,
+          variables: this.snapshotVariables(),
+          callStack: this.callStack.map((f) => ({ ...f })),
+          explanation: `Microtask error: ${e instanceof Error ? e.message : String(e)}`,
+          isError: true,
+          errorMessage: e instanceof Error ? e.message : String(e),
+          outputCount: this.outputs.length,
+        });
+      }
+    }
+  }
+
+  /** Process all queued macrotasks (setTimeout/setInterval callbacks) */
+  private processMacrotaskQueue(): void {
+    while (this.macrotaskQueue.length > 0) {
+      const task = this.macrotaskQueue.shift()!;
+      try {
+        // Execute the macrotask callback
+        task.callback?.();
+      } catch (e) {
+        this.steps.push({
+          line: task.line || this.lastRecordLine,
+          variables: this.snapshotVariables(),
+          callStack: this.callStack.map((f) => ({ ...f })),
+          explanation: `Macrotask error: ${e instanceof Error ? e.message : String(e)}`,
+          isError: true,
+          errorMessage: e instanceof Error ? e.message : String(e),
+          outputCount: this.outputs.length,
+        });
+      }
+    }
+  }
+
+  /** Schedule a microtask (called from Promise.then/catch) */
+  scheduleMicrotask(name: string, asyncSource: string, callback: () => void, args?: any[]): void {
+    const frame: CallFrame = {
+      name,
+      line: this.lastRecordLine || 0,
+      args: args?.length ? args.map((a) => shortPreview(a, 24)).join(', ') : undefined,
+      frameType: 'microtask',
+      asyncSource,
+      callback,
+    };
+    this.microtaskQueue.push(frame);
+  }
+
+  /** Schedule a macrotask (called from setTimeout/setInterval) */
+  scheduleMacrotask(name: string, asyncSource: string, callback: () => void, args?: any[]): void {
+    const frame: CallFrame = {
+      name,
+      line: this.lastRecordLine || 0,
+      args: args?.length ? args.map((a) => shortPreview(a, 24)).join(', ') : undefined,
+      frameType: 'macrotask',
+      asyncSource,
+      callback,
+    };
+    this.macrotaskQueue.push(frame);
   }
 
   /* ---------------------------- helpers ---------------------------- */
@@ -390,6 +465,7 @@ export class JsInterpreter {
     if (prev) for (const v of prev) prevMap.set(v.name, v.display ?? '');
     return this.visibleBindings(this.currentScope).map(({ name, value, scope }) => {
       let display = shortPreview(value, 80);
+      let fullDisplay = formatPreview(value, 0);
       let type = typeOfValue(value);
 
       if (ARGUMENTS_OBJECTS.has(value)) {
@@ -397,17 +473,21 @@ export class JsInterpreter {
         const items = value.slice(0, 5).map((item: any) => shortPreview(item, 32));
         const more = value.length > items.length ? ', …' : '';
         display = `Arguments(${value.length})${items.length ? ` [${items.join(', ')}${more}]` : ''}`;
+        fullDisplay = `Arguments(${value.length}) [${value.slice(0, 50).map((item: any) => formatPreview(item, 0)).join(', ')}${value.length > 50 ? ', …' : ''}]`;
         type = 'arguments';
       } else if (typeof value === 'function') {
         // Anonymous function expressions inherit the name of their binding.
         const fnName = value.name && value.name !== 'anonymous' ? value.name : name;
         display = `ƒ ${fnName}()`;
+        fullDisplay = `ƒ ${fnName}()`;
       }
 
       return {
         name,
         value: safeJson(value),
         display,
+        fullValue: safeJson(value),
+        fullDisplay,
         type,
         scope,
         kind: isTreeNodeLike(value) ? 'tree' : isListNodeLike(value) ? 'list' : undefined,
@@ -661,11 +741,20 @@ export class JsInterpreter {
     const now = this.now();
     const selfMs = this.lastRecordAt ? now - this.lastRecordAt : 0;
 
-    if (this.lastRecordLine) {
-      const entry = this.lineHits.get(this.lastRecordLine) || { hits: 0, selfMs: 0, peakBytes: 0 };
+    // Increment hit count for the current line being executed
+    if (line > 0) {
+      const entry = this.lineHits.get(line) || { hits: 0, selfMs: 0, peakBytes: 0 };
       entry.hits += 1;
       entry.selfMs += selfMs;
-      this.lineHits.set(this.lastRecordLine, entry);
+      this.lineHits.set(line, entry);
+      this.executedLines.add(line);
+    }
+
+    // Also account for time spent on the previous line
+    if (this.lastRecordLine && this.lastRecordLine !== line) {
+      const prevEntry = this.lineHits.get(this.lastRecordLine) || { hits: 0, selfMs: 0, peakBytes: 0 };
+      prevEntry.selfMs += selfMs;
+      this.lineHits.set(this.lastRecordLine, prevEntry);
     }
     this.lastRecordAt = now;
     this.lastRecordLine = line;
@@ -678,13 +767,13 @@ export class JsInterpreter {
     const structures = this.detectDataStructures(this.currentScope);
     const source = (this.lines[line - 1] || '').trim();
 
-    if (line > 0) this.executedLines.add(line);
-
     const step: ExecutionStep = {
       ...extra,
       line,
       variables,
       callStack: this.callStack.map((f) => ({ ...f })),
+      microtaskQueue: this.microtaskQueue.map((f) => ({ ...f })),
+      macrotaskQueue: this.macrotaskQueue.map((f) => ({ ...f })),
       source,
       outputCount: this.outputs.length,
       dataStructure: structures[0],
@@ -783,6 +872,12 @@ export class JsInterpreter {
         });
       }
     }
+
+    // Process microtask queue (Promise callbacks)
+    this.processMicrotaskQueue();
+
+    // Process macrotask queue (setTimeout/setInterval callbacks)
+    this.processMacrotaskQueue();
 
     // append final state step
     if (!error && this.steps.length > 0) {
@@ -1804,6 +1899,8 @@ export class JsInterpreter {
     args: any[],
     thisVal: any,
     params?: any[],
+    frameType: 'sync' | 'microtask' | 'macrotask' = 'sync',
+    asyncSource?: string,
   ): any {
     if (this.depth >= this.maxDepth) throw new HaltSignal('depth');
     this.depth++;
@@ -1833,6 +1930,8 @@ export class JsInterpreter {
       name: name || 'anonymous',
       line: fnNode.loc?.start?.line ?? 0,
       args: args.length ? args.map((a) => shortPreview(a, 24)).join(', ') : undefined,
+      frameType,
+      asyncSource,
     };
     this.callStack.push(frame);
 
@@ -1896,7 +1995,96 @@ export class JsInterpreter {
 /* Globals exposed to user code                                        */
 /* ------------------------------------------------------------------ */
 
-function makeGlobals(consoleLike: { log: (...a: any[]) => void; error: (...a: any[]) => void; warn: (...a: any[]) => void }) {
+interface InterpreterRef {
+  microtaskQueue: CallFrame[];
+  macrotaskQueue: CallFrame[];
+  scheduleMicrotask: (name: string, asyncSource: string, callback: () => void, args?: any[]) => void;
+  scheduleMacrotask: (name: string, asyncSource: string, callback: () => void, args?: any[]) => void;
+}
+
+function makeGlobals(
+  consoleLike: { log: (...a: any[]) => void; error: (...a: any[]) => void; warn: (...a: any[]) => void },
+  interpreterRef?: InterpreterRef
+) {
+  const { scheduleMicrotask, scheduleMacrotask } = interpreterRef || {
+    scheduleMicrotask: () => {},
+    scheduleMacrotask: () => {},
+  };
+
+  // Track Promise callbacks as microtasks - intercept .then() and .catch()
+  const OriginalPromise = Promise;
+  const TrackedPromise = function (executor: (resolve: (value: any) => void, reject: (reason: any) => void) => void) {
+    return new OriginalPromise((resolve, reject) => {
+      executor(resolve, reject);
+    });
+  } as any;
+  
+  // Intercept .then() to schedule microtasks when called
+  const originalThen = OriginalPromise.prototype.then;
+  TrackedPromise.prototype.then = function (onFulfilled: any, onRejected: any) {
+    const promise = this;
+    return originalThen.call(promise, 
+      (value) => {
+        // Schedule microtask for the fulfillment handler
+        if (onFulfilled && scheduleMicrotask) {
+          scheduleMicrotask('Promise.then', 'Promise.then', () => onFulfilled(value), [value]);
+        }
+        return value;
+      },
+      (reason) => {
+        // Schedule microtask for the rejection handler
+        if (onRejected && scheduleMicrotask) {
+          scheduleMicrotask('Promise.catch', 'Promise.catch', () => onRejected(reason), [reason]);
+        }
+        throw reason;
+      }
+    );
+  };
+  
+  // Intercept .catch() to schedule microtasks when called
+  const originalCatch = OriginalPromise.prototype.catch;
+  TrackedPromise.prototype.catch = function (onRejected: any) {
+    const promise = this;
+    return originalCatch.call(promise, (reason) => {
+      if (scheduleMicrotask) {
+        scheduleMicrotask('Promise.catch', 'Promise.catch', () => onRejected(reason), [reason]);
+      }
+      throw reason;
+    });
+  };
+  
+  TrackedPromise.prototype = OriginalPromise.prototype;
+  TrackedPromise.resolve = OriginalPromise.resolve;
+  TrackedPromise.reject = OriginalPromise.reject;
+  TrackedPromise.all = OriginalPromise.all;
+  TrackedPromise.race = OriginalPromise.race;
+  TrackedPromise.allSettled = OriginalPromise.allSettled;
+  TrackedPromise.any = OriginalPromise.any;
+
+  // Track setTimeout/setInterval as macrotasks - intercept when SCHEDULED
+  const originalSetTimeout = setTimeout;
+  const originalSetInterval = setInterval;
+  const originalClearTimeout = clearTimeout;
+  const originalClearInterval = clearInterval;
+
+  const trackedSetTimeout = ((callback: any, delay?: number, ...args: any[]) => {
+    // Schedule macrotask when setTimeout is CALLED (not when it executes)
+    if (scheduleMacrotask) {
+      scheduleMacrotask('setTimeout callback', 'setTimeout', callback, args);
+    }
+    return originalSetTimeout(callback, delay, ...args);
+  }) as any;
+  trackedSetTimeout.__proto__ = originalSetTimeout;
+
+  const trackedSetInterval = ((callback: any, delay?: number, ...args: any[]) => {
+    // Schedule macrotask when setInterval is CALLED
+    if (scheduleMacrotask) {
+      scheduleMacrotask('setInterval callback', 'setInterval', callback, args);
+    }
+    return originalSetInterval(callback, delay, ...args);
+  }) as any;
+  trackedSetInterval.__proto__ = originalSetInterval;
+
   return {
     console: consoleLike,
     Math,
@@ -1916,7 +2104,7 @@ function makeGlobals(consoleLike: { log: (...a: any[]) => void; error: (...a: an
     TypeError,
     RangeError,
     SyntaxError,
-    Promise,
+    Promise: TrackedPromise,
     Symbol,
     parseInt,
     parseFloat,
@@ -1925,6 +2113,16 @@ function makeGlobals(consoleLike: { log: (...a: any[]) => void; error: (...a: an
     encodeURIComponent,
     decodeURIComponent,
     structuredClone,
+    setTimeout: trackedSetTimeout,
+    setInterval: trackedSetInterval,
+    clearTimeout: originalClearTimeout,
+    clearInterval: originalClearInterval,
+    queueMicrotask: (callback: () => void) => {
+      if (scheduleMicrotask) {
+        scheduleMicrotask('queueMicrotask callback', 'queueMicrotask', callback);
+      }
+      callback();
+    },
   };
 }
 
@@ -1936,6 +2134,19 @@ let GLOBALS: Record<string, any> = makeGlobals({
 
 export function setRuntimeConsole(consoleLike: { log: (...a: any[]) => void; error: (...a: any[]) => void; warn: (...a: any[]) => void }) {
   GLOBALS = makeGlobals(consoleLike);
+}
+
+/** Create globals with interpreter reference for async tracking */
+export function makeGlobalsWithInterpreter(
+  consoleLike: { log: (...a: any[]) => void; error: (...a: any[]) => void; warn: (...a: any[]) => void },
+  interpreter: JsInterpreter
+) {
+  return makeGlobals(consoleLike, {
+    microtaskQueue: interpreter.microtaskQueue,
+    macrotaskQueue: interpreter.macrotaskQueue,
+    scheduleMicrotask: interpreter.scheduleMicrotask.bind(interpreter),
+    scheduleMacrotask: interpreter.scheduleMacrotask.bind(interpreter),
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -1957,7 +2168,11 @@ export function traceJavaScript({ code, input, options }: TraceInput): Interpret
   // separate array here made every step claim zero output.
   const recordConsole = (...args: any[]) =>
     interp.outputs.push(args.map((a) => (typeof a === 'string' ? a : formatPreview(a, 0))).join(' '));
-  setRuntimeConsole({ log: recordConsole, error: recordConsole, warn: recordConsole });
+  // Use interpreter-aware globals for async tracking
+  const globals = makeGlobalsWithInterpreter({ log: recordConsole, error: recordConsole, warn: recordConsole }, interp);
+  // Temporarily replace GLOBALS for this trace
+  const prevGlobals = GLOBALS;
+  GLOBALS = globals;
 
   let program: any;
   try {
@@ -2014,6 +2229,8 @@ export function traceJavaScript({ code, input, options }: TraceInput): Interpret
 
   interp.inputAliasNames = new Set(Object.keys(injected));
   const result = interp.run(program, injected);
+  // Restore original globals
+  GLOBALS = prevGlobals;
   return {
     ...result,
     outputs: interp.outputs,

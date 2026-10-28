@@ -9,6 +9,30 @@ export type SupportedLanguage =
   | 'rust';
 
 /**
+ * Validates that the selected language matches the code content.
+ * Throws an error if there's a mismatch.
+ */
+export function validateLanguageMatch(code: string, language: SupportedLanguage): void {
+  const detected = detectLanguage(code);
+  if (detected && detected !== language) {
+    const languageLabels: Record<SupportedLanguage, string> = {
+      javascript: 'JavaScript',
+      typescript: 'TypeScript',
+      python: 'Python',
+      java: 'Java',
+      cpp: 'C++',
+      c: 'C',
+      go: 'Go',
+      rust: 'Rust',
+    };
+    throw new Error(
+      `Language mismatch: The code appears to be ${languageLabels[detected]} but ${languageLabels[language]} is selected. ` +
+      `Please select ${languageLabels[detected]} or change the code.`
+    );
+  }
+}
+
+/**
  * Lightweight, dependency-free language detection for pasted snippets.
  * Returns `null` when there is not enough signal to make a confident call.
  */

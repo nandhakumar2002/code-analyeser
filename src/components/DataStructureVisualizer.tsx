@@ -19,6 +19,27 @@ function preview(value: any): string {
   }
 }
 
+function formatFull(value: any): string {
+  if (value === null) return 'null';
+  if (value === undefined) return 'undefined';
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (typeof value === 'number') {
+    if (Number.isNaN(value)) return 'NaN';
+    if (value === Infinity) return 'Infinity';
+    if (value === -Infinity) return '-Infinity';
+    return String(value);
+  }
+  if (typeof value === 'boolean') return String(value);
+  if (typeof value === 'bigint') return `${value}n`;
+  if (typeof value === 'symbol') return value.toString();
+  if (typeof value === 'function') return `ƒ ${value.name || 'anonymous'}()`;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
 const COLORS = {
   cell: 'var(--bg-elevated)',
   border: 'var(--border)',
@@ -82,6 +103,18 @@ const ArrayView: React.FC<Extract<DataStructureView, { kind: 'array' }>> = ({ va
           );
         })}
       </div>
+      {values.length > 10 && (
+        <details style={{ marginTop: 8 }}>
+          <summary style={{ cursor: 'pointer', color: COLORS.accent, fontSize: 10.5, fontWeight: 600 }}>
+            Show all {values.length} items (expanded)
+          </summary>
+          <div style={{ marginTop: 8, padding: 8, background: COLORS.cell, borderRadius: 4, overflow: 'auto', maxHeight: 300 }}>
+            <pre style={{ margin: 0, fontSize: 10, fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}>
+              {formatFull(values)}
+            </pre>
+          </div>
+        </details>
+      )}
     </div>
   );
 };
@@ -155,6 +188,18 @@ const MatrixView: React.FC<Extract<DataStructureView, { kind: 'matrix' }>> = ({
         <div style={{ color: COLORS.active, fontSize: 10, marginTop: 4 }}>
           active cell: {Array.from(activeCells).join(' · ')}
         </div>
+      )}
+      {(values.length > 10 || values[0]?.length > 10) && (
+        <details style={{ marginTop: 8 }}>
+          <summary style={{ cursor: 'pointer', color: COLORS.accent, fontSize: 10.5, fontWeight: 600 }}>
+            Show full matrix ({values.length}×{values[0]?.length || 0})
+          </summary>
+          <div style={{ marginTop: 8, padding: 8, background: COLORS.cell, borderRadius: 4, overflow: 'auto', maxHeight: 300 }}>
+            <pre style={{ margin: 0, fontSize: 10, fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}>
+              {formatFull(values)}
+            </pre>
+          </div>
+        </details>
       )}
     </div>
   );
@@ -250,6 +295,18 @@ const TreeView: React.FC<Extract<DataStructureView, { kind: 'tree' }>> = ({ root
           </g>
         ))}
       </svg>
+      {layout.nodes.length > 10 && (
+        <details style={{ marginTop: 8 }}>
+          <summary style={{ cursor: 'pointer', color: COLORS.accent, fontSize: 10.5, fontWeight: 600 }}>
+            Show full tree structure ({layout.nodes.length} nodes)
+          </summary>
+          <div style={{ marginTop: 8, padding: 8, background: COLORS.cell, borderRadius: 4, overflow: 'auto', maxHeight: 300 }}>
+            <pre style={{ margin: 0, fontSize: 10, fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}>
+              {formatFull(root)}
+            </pre>
+          </div>
+        </details>
+      )}
     </div>
   );
 };
@@ -298,6 +355,18 @@ const ListView: React.FC<Extract<DataStructureView, { kind: 'list' }>> = ({ node
         );
       })}
       <div style={{ color: COLORS.muted, alignSelf: 'flex-end', padding: '0 0 10px 6px', fontSize: 11 }}>null</div>
+      {nodes.length > 10 && (
+        <details style={{ marginTop: 8, marginLeft: -4 }}>
+          <summary style={{ cursor: 'pointer', color: COLORS.accent, fontSize: 10.5, fontWeight: 600 }}>
+            Show all {nodes.length} nodes
+          </summary>
+          <div style={{ marginTop: 8, padding: 8, background: COLORS.cell, borderRadius: 4, overflow: 'auto', maxHeight: 300 }}>
+            <pre style={{ margin: 0, fontSize: 10, fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}>
+              {formatFull(nodes.map(n => n.val))}
+            </pre>
+          </div>
+        </details>
+      )}
     </div>
   );
 };
@@ -369,6 +438,20 @@ const GraphView: React.FC<Extract<DataStructureView, { kind: 'graph' }>> = ({ no
           );
         })}
       </svg>
+      {nodes.length > 15 && (
+        <details style={{ marginTop: 8 }}>
+          <summary style={{ cursor: 'pointer', color: COLORS.accent, fontSize: 10.5, fontWeight: 600 }}>
+            Show full graph ({nodes.length} nodes, {edges.length} edges)
+          </summary>
+          <div style={{ marginTop: 8, padding: 8, background: COLORS.cell, borderRadius: 4, overflow: 'auto', maxHeight: 300 }}>
+            <pre style={{ margin: 0, fontSize: 10, fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}>
+Nodes: {formatFull(nodes)}
+Edges: {formatFull(edges)}
+{visited ? `Visited: ${formatFull(visited)}` : ''}
+            </pre>
+          </div>
+        </details>
+      )}
     </div>
   );
 };
@@ -411,6 +494,18 @@ const MapView: React.FC<Extract<DataStructureView, { kind: 'map' }>> = ({ entrie
           </div>
         </div>
       ))}
+      {entries.length > 15 && (
+        <details style={{ marginTop: 8 }}>
+          <summary style={{ cursor: 'pointer', color: COLORS.accent, fontSize: 10.5, fontWeight: 600 }}>
+            Show all {entries.length} entries
+          </summary>
+          <div style={{ marginTop: 8, padding: 8, background: COLORS.cell, borderRadius: 4, overflow: 'auto', maxHeight: 300 }}>
+            <pre style={{ margin: 0, fontSize: 10, fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}>
+              {formatFull(Object.fromEntries(entries.map(e => [e.key, e.value])))}
+            </pre>
+          </div>
+        </details>
+      )}
     </div>
   );
 };
@@ -435,6 +530,18 @@ const SetView: React.FC<Extract<DataStructureView, { kind: 'set' }>> = ({ values
           {value}
         </span>
       ))}
+      {values.length > 15 && (
+        <details style={{ marginTop: 8, width: '100%' }}>
+          <summary style={{ cursor: 'pointer', color: COLORS.accent, fontSize: 10.5, fontWeight: 600 }}>
+            Show all {values.length} values
+          </summary>
+          <div style={{ marginTop: 8, padding: 8, background: COLORS.cell, borderRadius: 4, overflow: 'auto', maxHeight: 300 }}>
+            <pre style={{ margin: 0, fontSize: 10, fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}>
+              {formatFull(values)}
+            </pre>
+          </div>
+        </details>
+      )}
     </div>
   );
 };
@@ -477,6 +584,18 @@ const StackQueueView: React.FC<Extract<DataStructureView, { kind: 'stack' | 'que
           </div>
         );
       })}
+      {values.length > 10 && (
+        <details style={{ marginTop: 8, width: '100%' }}>
+          <summary style={{ cursor: 'pointer', color: COLORS.accent, fontSize: 10.5, fontWeight: 600 }}>
+            Show all {values.length} items
+          </summary>
+          <div style={{ marginTop: 8, padding: 8, background: COLORS.cell, borderRadius: 4, overflow: 'auto', maxHeight: 300 }}>
+            <pre style={{ margin: 0, fontSize: 10, fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}>
+              {formatFull(values)}
+            </pre>
+          </div>
+        </details>
+      )}
     </div>
   );
 };

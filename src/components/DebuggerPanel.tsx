@@ -2,6 +2,8 @@
 import {
   Braces,
   Check,
+  ChevronDown,
+  ChevronUp,
   CircleAlert,
   Clock,
   Copy,
@@ -34,6 +36,7 @@ import { copyText } from '../utils/clipboard';
 import DataStructureVisualizer from './DataStructureVisualizer';
 
 type TabId = 'trace' | 'timeline' | 'visualizer' | 'complexity' | 'patterns';
+type TraceSubTab = 'variables' | 'visualizer' | 'console' | 'callstack';
 type TimelineFilter = 'all' | 'calls' | 'returns' | 'errors' | 'output';
 
 interface DebuggerPanelProps {
@@ -63,15 +66,21 @@ interface DebuggerPanelProps {
 const TABS: Array<{ id: TabId; label: string; icon: typeof Workflow; title: string }> = [
   { id: 'trace', label: 'Trace', icon: Workflow, title: 'Step explanation, call stack, variables and console' },
   { id: 'timeline', label: 'Timeline', icon: Clock, title: 'Full execution timeline, filters and trace metrics' },
-  { id: 'visualizer', label: 'Visualizer', icon: Layers, title: 'Data structure snapshots (arrays, trees, grids, maps)' },
   { id: 'complexity', label: 'Complexity', icon: Gauge, title: 'Big-O analysis, growth curve and line metrics' },
   { id: 'patterns', label: 'Patterns & AST', icon: Braces, title: 'Detected algorithm patterns and AST breakdown' },
 ];
 
+const TRACE_SUB_TABS: Array<{ id: TraceSubTab; label: string; icon: typeof Braces; title: string }> = [
+  { id: 'variables', label: 'Variables', icon: Braces, title: 'Variable state with compare and expandable values' },
+  { id: 'visualizer', label: 'Visualizer', icon: Layers, title: 'Data structure visualizations for current step' },
+  { id: 'console', label: 'Console', icon: Terminal, title: 'Console output with step mapping' },
+  { id: 'callstack', label: 'Call Stack', icon: Workflow, title: 'Call stack with micro/macro task queues' },
+];
+
 const SCOPE_LABEL: Record<VariableScope, string> = {
-  local: 'local',
-  closure: 'closure',
-  global: 'global',
+  local: 'Local',
+  closure: 'Closure',
+  global: 'Global',
 };
 
 const COMPLEXITY_CURVES: Record<string, (n: number) => number> = {
@@ -149,6 +158,15 @@ function categoryColor(category: ASTNodeInfo['category']): string {
       return 'var(--text-muted)';
   }
 }
+
+const CATEGORY_LABEL: Record<ASTNodeInfo['category'], string> = {
+  loop: 'Loop',
+  conditional: 'Conditional',
+  declaration: 'Declaration',
+  function: 'Function',
+  call: 'Call',
+  other: 'Other',
+};
 
 const SectionTitle: React.FC<{
   children: React.ReactNode;
@@ -288,23 +306,34 @@ const DebuggerPanel: React.FC<DebuggerPanelProps> = ({
   onSeek,
 }) => {
   const [activeTab, setActiveTab] = React.useState<TabId>('trace');
+  const [traceSubTab, setTraceSubTab] = React.useState<TraceSubTab>('variables');
+  const [varViewMode, setVarViewMode] = React.useState<'current' | 'final' | 'compare'>('current');
   const [viewMode, setViewMode] = React.useState<'step' | 'final' | 'input'>('step');
   const [varFilter, setVarFilter] = React.useState('');
-  const [compareVars, setCompareVars] = React.useState(true);
-  const [consoleScope, setConsoleScope] = React.useState<'all' | 'upto'>('all');
   const [timelineFilter, setTimelineFilter] = React.useState<TimelineFilter>('all');
   const [astCategory, setAstCategory] = React.useState<string>('all');
   const [showUnexecuted, setShowUnexecuted] = React.useState(false);
   const [consoleCopied, setConsoleCopied] = React.useState(false);
+  const [expandedVars, setExpandedVars] = React.useState<Set<string>>(new Set());
   const activeStepRef = React.useRef<HTMLButtonElement | null>(null);
   const consoleRef = React.useRef<HTMLDivElement | null>(null);
+  const variablesRef = React.useRef<HTMLDivElement | null>(null);
+
+  // Get final step variables for "Final Result" view
+  // const finalStep = steps.length > 0 ? steps[steps.length - 1] : undefined;
 
   // Keep the console scrolled to the line emitted by the current step.
   React.useEffect(() => {
-    if (activeTab !== 'trace') return;
+    if (activeTab !== 'trace' || traceSubTab !== 'console') return;
     const currentNode = consoleRef.current?.querySelector('.output-line.current') as HTMLElement | null;
     currentNode?.scrollIntoView({ block: 'nearest' });
-  }, [activeTab, currentStepIndex, consoleScope]);
+  }, [activeTab, traceSubTab, currentStepIndex]);
+
+  // Prevent auto-scroll when switching steps in variables tab
+  React.useEffect(() => {
+    if (activeTab !== 'trace' || traceSubTab !== 'variables') return;
+    // Don't auto-scroll variables panel
+  }, [activeTab, traceSubTab, currentStepIndex]);
 
   const totalSteps = steps.length;
   const safeIndex = totalSteps > 0 ? Math.min(Math.max(currentStepIndex, 0), totalSteps - 1) : 0;
@@ -341,7 +370,6 @@ const DebuggerPanel: React.FC<DebuggerPanelProps> = ({
   const visibleCompared = mergedVariables.filter((entry) => entry.name.toLowerCase().includes(filterText));
   const visibleVariables = currentVars.filter((variable) => variable.name.toLowerCase().includes(filterText));
   const changedCount = currentVars.filter((variable) => variable.changed).length;
-  const showCompare = compareVars && Boolean(previousStep);
 
   const executedLines = (lineMetrics || []).filter((metric) => metric.hits > 0);
   const tableLines = showUnexecuted ? lineMetrics || [] : executedLines;
@@ -369,7 +397,7 @@ const DebuggerPanel: React.FC<DebuggerPanelProps> = ({
   const newOutputStart = Math.min(previousOutputCount, outputs.length);
   const newOutputEnd = Math.min(Math.max(currentOutputCount, newOutputStart), outputs.length);
   const newOutputCount = Math.max(0, newOutputEnd - newOutputStart);
-  const visibleOutputs = consoleScope === 'upto' ? outputs.slice(0, currentOutputCount) : outputs;
+  const visibleOutputs = outputs;
 
   // For every console line, find the first step that reported it.
   const outputProducers = React.useMemo(() => {
@@ -617,6 +645,7 @@ const DebuggerPanel: React.FC<DebuggerPanelProps> = ({
           <div className='fade-in'>
             {currentStep ? (
               <>
+                {/* Step header */}
                 <div
                   className='card'
                   style={{
@@ -724,440 +753,754 @@ const DebuggerPanel: React.FC<DebuggerPanelProps> = ({
                   </div>
                 )}
 
-                {currentStep.callStack && currentStep.callStack.length > 0 && (
-                  <>
-                    <SectionTitle hint='top of stack first'>Call stack</SectionTitle>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                      {[...currentStep.callStack].reverse().map((frame, idx) => (
-                        <div
-                          key={`${frame.name}-${idx}`}
-                          style={{
-                            display: 'flex',
-                            gap: 8,
-                            alignItems: 'baseline',
-                            padding: '5px 9px',
-                            background: idx === 0 ? 'var(--bg-active)' : 'var(--bg-panel)',
-                            border: `1px solid ${idx === 0 ? 'var(--accent-border)' : 'var(--border-subtle)'}`,
-                            borderRadius: 6,
-                            fontSize: 11.5,
-                            fontFamily: 'monospace',
-                          }}
-                        >
-                          <span style={{ color: idx === 0 ? 'var(--text-strong)' : 'var(--info)' }}>
-                            {frame.name}()
-                          </span>
-                          {frame.args && (
-                            <span
-                              style={{
-                                color: 'var(--text-muted)',
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                whiteSpace: 'nowrap',
-                              }}
-                            >
-                              {frame.args}
-                            </span>
-                          )}
-                          <span style={{ marginLeft: 'auto', color: 'var(--text-muted)' }}>L{frame.line}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </>
-                )}
-
-                <SectionTitle
-                  hint={
-                    showCompare
-                      ? `${visibleCompared.length} tracked · completed vs current`
-                      : `${visibleVariables.length} visible · ${changedCount} changed`
-                  }
-                  action={
-                    <div className='segmented'>
-                      <button
-                        type='button'
-                        className={`seg-btn${!compareVars ? ' active' : ''}`}
-                        onClick={() => setCompareVars(false)}
+                {/* Final return value (shown in all trace sub-tabs) */}
+                {returnValue && (
+                  <div style={{ marginTop: 12 }}>
+                    <SectionTitle>Final return value</SectionTitle>
+                    <div style={{ marginBottom: 8 }}>
+                      <div
+                        style={{
+                          padding: '8px 10px',
+                          background: 'var(--bg-panel)',
+                          border: '1px solid var(--border)',
+                          borderRadius: 7,
+                          color: 'var(--green)',
+                          fontFamily: 'monospace',
+                          fontSize: 11.5,
+                          wordBreak: 'break-all',
+                        }}
                       >
-                        Current
-                      </button>
-                      <button
-                        type='button'
-                        className={`seg-btn${compareVars ? ' active' : ''}`}
-                        onClick={() => setCompareVars(true)}
-                        disabled={!previousStep}
-                        title={previousStep ? 'Compare completed and current step' : 'No previous step yet'}
-                      >
-                        Compare
-                      </button>
-                    </div>
-                  }
-                >
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                    <Sparkles size={13} /> Variable state
-                  </span>
-                </SectionTitle>
-                <input
-                  value={varFilter}
-                  onChange={(event) => setVarFilter(event.target.value)}
-                  placeholder='Filter variables…'
-                  className='field'
-                  style={{ marginBottom: 8 }}
-                  aria-label='Filter variables'
-                />
-
-                {showCompare && (
-                  <div className='compare-head'>
-                    <div className='compare-column'>
-                      <span className='compare-label'>Completed</span>
-                      <span className='compare-value'>Step {safeIndex} · L{previousStep?.line || '—'}</span>
-                    </div>
-                    <div className='compare-column current'>
-                      <span className='compare-label'>Current</span>
-                      <span className='compare-value'>Step {safeIndex + 1} · L{currentStep.line || '—'}</span>
+                        {formatValue(returnValue.value, returnValue.display)}
+                      </div>
+                      {returnValue.fullDisplay && (
+                        <details style={{ marginTop: 8 }}>
+                          <summary style={{ cursor: 'pointer', color: 'var(--accent)', fontSize: 11, fontWeight: 600 }}>
+                            Show full value
+                          </summary>
+                          <pre style={{ margin: '8px 0 0', whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: 'var(--green)', background: 'var(--bg-panel)', padding: 8, borderRadius: 4, fontSize: 11 }}>
+                            {returnValue.fullDisplay}
+                          </pre>
+                        </details>
+                      )}
                     </div>
                   </div>
                 )}
 
-                <div className='card' style={{ overflow: 'hidden' }}>
-                  <table className='data-table'>
-                    <thead>
-                      <tr>
-                        {showCompare ? (
-                          <>
-                            <th>Variable</th>
-                            <th>Completed</th>
-                            <th>Current</th>
-                            <th>Type</th>
-                            <th>Scope</th>
-                          </>
-                        ) : (
-                          <>
-                            <th>Variable</th>
-                            <th>Value</th>
-                            <th>Type</th>
-                            <th>Scope</th>
-                          </>
-                        )}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {showCompare
-                        ? visibleCompared.map((entry) => {
-                            const typeSource = entry.current || entry.previous;
-                            const changed = Boolean(entry.current?.changed);
-                            const added = !entry.previous && Boolean(entry.current);
-                            const removed = Boolean(entry.previous) && !entry.current;
-                            return (
-                              <tr key={entry.name}>
+                {/* Trace sub-tabs */}
+                <div style={{ marginTop: 12 }}>
+                  <div className='tab-bar' role='tablist' aria-label='Trace sections' style={{ marginBottom: 8 }}>
+                    {TRACE_SUB_TABS.map((tab) => {
+                      const Icon = tab.icon;
+                      const active = traceSubTab === tab.id;
+                      return (
+                        <button
+                          key={tab.id}
+                          type='button'
+                          role='tab'
+                          aria-selected={active}
+                          onClick={() => setTraceSubTab(tab.id)}
+                          title={tab.title}
+                          className={`tab-btn${active ? ' active' : ''}`}
+                        >
+                          <Icon size={13} />
+                          <span>{tab.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Variables sub-tab */}
+                  {traceSubTab === 'variables' && (
+                    <div ref={variablesRef} style={{ maxHeight: 'calc(100vh - 400px)', overflow: 'auto' }}>
+                      <SectionTitle
+                        hint={
+                          varViewMode === 'compare'
+                            ? `${visibleCompared.length} tracked · completed vs current`
+                            : `${visibleVariables.length} visible · ${changedCount} changed`
+                        }
+                        action={
+                          <div className='segmented'>
+                            <button
+                              type='button'
+                              className={`seg-btn${varViewMode === 'current' ? ' active' : ''}`}
+                              onClick={() => setVarViewMode('current')}
+                            >
+                              Current
+                            </button>
+                            <button
+                              type='button'
+                              className={`seg-btn${varViewMode === 'compare' ? ' active' : ''}`}
+                              onClick={() => setVarViewMode('compare')}
+                              disabled={!previousStep}
+                              title={previousStep ? 'Compare completed and current step' : 'No previous step yet'}
+                            >
+                              Compare
+                            </button>
+                          </div>
+                        }
+                      >
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          <Sparkles size={13} /> Variable state
+                        </span>
+                      </SectionTitle>
+                      <input
+                        value={varFilter}
+                        onChange={(event) => setVarFilter(event.target.value)}
+                        placeholder='Filter variables…'
+                        className='field'
+                        style={{ marginBottom: 8 }}
+                        aria-label='Filter variables'
+                      />
+
+                      {varViewMode === 'compare' && (
+                        <div className='compare-head'>
+                          <div className='compare-column'>
+                            <span className='compare-label'>Completed</span>
+                            <span className='compare-value'>Step {safeIndex} · L{previousStep?.line || '—'}</span>
+                          </div>
+                          <div className='compare-column current'>
+                            <span className='compare-label'>Current</span>
+                            <span className='compare-value'>Step {safeIndex + 1} · L{currentStep.line || '—'}</span>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className='card' style={{ overflow: 'hidden' }}>
+                        <table className='data-table'>
+                          <thead>
+                            <tr>
+                              {varViewMode === 'compare' ? (
+                                <>
+                                  <th>Variable</th>
+                                  <th>Completed</th>
+                                  <th>Current</th>
+                                  <th>Type</th>
+                                  <th>Scope</th>
+                                  <th style={{ width: 36 }}></th>
+                                </>
+                              ) : (
+                                <>
+                                  <th>Variable</th>
+                                  <th>Value</th>
+                                  <th>Type</th>
+                                  <th>Scope</th>
+                                  <th style={{ width: 36 }}></th>
+                                </>
+                              )}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {varViewMode === 'compare'
+                              ? visibleCompared.map((entry) => {
+                                  const typeSource = entry.current || entry.previous;
+                                  const changed = Boolean(entry.current?.changed);
+                                  const added = !entry.previous && Boolean(entry.current);
+                                  const removed = Boolean(entry.previous) && !entry.current;
+                                  const isExpanded = expandedVars.has(entry.name);
+                                  return (
+                                    <React.Fragment key={entry.name}>
+                                      <tr
+                                        style={{
+                                          background: isExpanded ? 'var(--bg-active)' : undefined,
+                                        }}
+                                      >
+                                        <td
+                                          style={{
+                                            color: 'var(--info)',
+                                            fontFamily: 'monospace',
+                                            fontWeight: 600,
+                                            whiteSpace: 'nowrap',
+                                          }}
+                                        >
+                                          {changed && (
+                                            <span
+                                              title='changed since the completed step'
+                                              style={{ color: 'var(--yellow)', marginRight: 4 }}
+                                            >
+                                              ●
+                                            </span>
+                                          )}
+                                          {entry.name}
+                                          {added && (
+                                            <span
+                                              className='chip chip-accent'
+                                              style={{ marginLeft: 5 }}
+                                              title='added since the completed step'
+                                            >
+                                              new
+                                            </span>
+                                          )}
+                                          {removed && (
+                                            <span
+                                              className='chip chip-red'
+                                              style={{ marginLeft: 5 }}
+                                              title='no longer in scope at the current step'
+                                            >
+                                              gone
+                                            </span>
+                                          )}
+                                        </td>
+                                        <td
+                                          style={{
+                                            fontFamily: 'monospace',
+                                            fontSize: 11,
+                                            color: 'var(--text-muted)',
+                                            wordBreak: 'break-all',
+                                            maxWidth: 170,
+                                            opacity: entry.previous ? 1 : 0.5,
+                                          }}
+                                          title={entry.previous ? formatValue(entry.previous.value, entry.previous.display) : 'not in scope'}
+                                        >
+                                          {entry.previous
+                                            ? formatValue(entry.previous.value, entry.previous.display)
+                                            : '—'}
+                                        </td>
+                                        <td
+                                          style={{
+                                            fontFamily: 'monospace',
+                                            fontSize: 11,
+                                            color: changed
+                                              ? 'var(--yellow)'
+                                              : entry.current
+                                                ? 'var(--orange)'
+                                                : 'var(--text-muted)',
+                                            wordBreak: 'break-all',
+                                            maxWidth: 170,
+                                            opacity: entry.current ? 1 : 0.6,
+                                          }}
+                                          title={entry.current ? formatValue(entry.current.value, entry.current.display) : 'out of scope'}
+                                        >
+                                          {entry.current
+                                            ? formatValue(entry.current.value, entry.current.display)
+                                            : '—'}
+                                        </td>
+                                        <td style={{ color: 'var(--green)', fontSize: 10 }}>
+                                          {typeSource?.type ?? '—'}
+                                        </td>
+                                        <td style={{ color: 'var(--text-muted)', fontSize: 10 }}>
+                                          {typeSource ? SCOPE_LABEL[typeSource.scope || 'local'] : '—'}
+                                        </td>
+                                        <td style={{ textAlign: 'center', padding: '0 4px' }}>
+                                          {(entry.current?.fullDisplay || entry.previous?.fullDisplay) && (
+                                            <button
+                                              type='button'
+                                              className='icon-btn small'
+                                              onClick={() => setExpandedVars(prev => {
+                                                const next = new Set(prev);
+                                                if (next.has(entry.name)) next.delete(entry.name);
+                                                else next.add(entry.name);
+                                                return next;
+                                              })}
+                                              title={isExpanded ? 'Collapse' : 'Expand'}
+                                              style={{ padding: 2 }}
+                                            >
+                                              {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                                            </button>
+                                          )}
+                                        </td>
+                                      </tr>
+                                      {isExpanded && (
+                                        <tr style={{ background: 'var(--bg-inset)' }}>
+                                          <td colSpan={6} style={{ padding: '8px 12px' }}>
+                                            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 11, fontFamily: 'monospace' }}>
+                                              {entry.previous && (
+                                                <div style={{ flex: 1, minWidth: 200 }}>
+                                                  <div style={{ color: 'var(--text-muted)', fontSize: 10, marginBottom: 4 }}>Completed (Step {safeIndex})</div>
+                                                  <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: 'var(--text-muted)', background: 'var(--bg-panel)', padding: 8, borderRadius: 4 }}>
+                                                    {entry.previous.fullDisplay ?? formatValue(entry.previous.value, entry.previous.display)}
+                                                  </pre>
+                                                </div>
+                                              )}
+                                              {entry.current && (
+                                                <div style={{ flex: 1, minWidth: 200 }}>
+                                                  <div style={{ color: 'var(--text-muted)', fontSize: 10, marginBottom: 4 }}>Current (Step {safeIndex + 1})</div>
+                                                  <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: 'var(--orange)', background: 'var(--bg-panel)', padding: 8, borderRadius: 4 }}>
+                                                    {entry.current.fullDisplay ?? formatValue(entry.current.value, entry.current.display)}
+                                                  </pre>
+                                                </div>
+                                              )}
+                                            </div>
+                                          </td>
+                                        </tr>
+                                      )}
+                                    </React.Fragment>
+                                  );
+                                })
+                              : visibleVariables.map((variable) => {
+                                    const isExpanded = expandedVars.has(variable.name);
+                                    return (
+                                      <React.Fragment key={`${variable.scope || 'local'}-${variable.name}`}>
+                                        <tr
+                                          style={{
+                                            background: isExpanded ? 'var(--bg-active)' : undefined,
+                                          }}
+                                        >
+                                          <td
+                                            style={{
+                                              color: 'var(--info)',
+                                              fontFamily: 'monospace',
+                                              fontWeight: 600,
+                                              whiteSpace: 'nowrap',
+                                            }}
+                                          >
+                                            {variable.changed && (
+                                              <span
+                                                title='changed since last step'
+                                                style={{ color: 'var(--yellow)', marginRight: 4 }}
+                                              >
+                                                ●
+                                              </span>
+                                            )}
+                                            {variable.name}
+                                          </td>
+                                          <td
+                                            style={{
+                                              padding: '6px 9px',
+                                              color: variable.changed ? 'var(--yellow)' : 'var(--orange)',
+                                              fontSize: 11,
+                                              fontFamily: 'monospace',
+                                              wordBreak: 'break-all',
+                                              maxWidth: 220,
+                                            }}
+                                            title={formatValue(variable.value, variable.display)}
+                                          >
+                                            {formatValue(variable.value, variable.display)}
+                                          </td>
+                                          <td style={{ color: 'var(--green)', fontSize: 10 }}>{variable.type}</td>
+                                          <td style={{ color: 'var(--text-muted)', fontSize: 10 }}>
+                                            {SCOPE_LABEL[variable.scope || 'local']}
+                                          </td>
+                                          <td style={{ textAlign: 'center', padding: '0 4px' }}>
+                                            {variable.fullDisplay && (
+                                              <button
+                                                type='button'
+                                                className='icon-btn small'
+                                                onClick={() => setExpandedVars(prev => {
+                                                  const next = new Set(prev);
+                                                  if (next.has(variable.name)) next.delete(variable.name);
+                                                  else next.add(variable.name);
+                                                  return next;
+                                                })}
+                                                title={isExpanded ? 'Collapse' : 'Expand'}
+                                                style={{ padding: 2 }}
+                                              >
+                                                {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                                              </button>
+                                            )}
+                                          </td>
+                                        </tr>
+                                        {isExpanded && (
+                                          <tr style={{ background: 'var(--bg-inset)' }}>
+                                            <td colSpan={5} style={{ padding: '8px 12px' }}>
+                                              <div style={{ flex: 1, minWidth: 200 }}>
+                                                <div style={{ color: 'var(--text-muted)', fontSize: 10, marginBottom: 4 }}>Full Value</div>
+                                                <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: 'var(--orange)', background: 'var(--bg-panel)', padding: 8, borderRadius: 4 }}>
+                                                  {variable.fullDisplay}
+                                                </pre>
+                                              </div>
+                                            </td>
+                                          </tr>
+                                        )}
+                                      </React.Fragment>
+                                    );
+                                  })}
+                            {((varViewMode === 'compare' ? visibleCompared.length : visibleVariables.length) === 0) && (
+                              <tr>
                                 <td
+                                  colSpan={varViewMode === 'compare' ? 6 : 5}
                                   style={{
-                                    color: 'var(--info)',
-                                    fontFamily: 'monospace',
-                                    fontWeight: 600,
+                                    padding: 10,
+                                    color: 'var(--text-muted)',
+                                    textAlign: 'center',
+                                    fontSize: 11,
+                                  }}
+                                >
+                                  No variables in scope
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Visualizer sub-tab */}
+                  {traceSubTab === 'visualizer' && (
+                    <div style={{ maxHeight: 'calc(100vh - 400px)', overflow: 'auto' }}>
+                      <SectionTitle
+                        hint={`${displayedStructures.length} structure(s) · ${viewMode} view`}
+                        action={
+                          <div className='segmented' style={{ flexWrap: 'wrap' }}>
+                            <button
+                              type='button'
+                              className={`seg-btn${viewMode === 'step' ? ' active' : ''}`}
+                              onClick={() => setViewMode('step')}
+                              disabled={structures.length === 0}
+                              title='Data structures at current step'
+                            >
+                              Current Step
+                            </button>
+                            <button
+                              type='button'
+                              className={`seg-btn${viewMode === 'final' ? ' active' : ''}`}
+                              onClick={() => setViewMode('final')}
+                              disabled={finalStructures.length === 0 && lastStepStructures.length === 0}
+                              title='Final data structures after execution'
+                            >
+                              Final Result
+                            </button>
+                            <button
+                              type='button'
+                              className={`seg-btn${viewMode === 'input' ? ' active' : ''}`}
+                              onClick={() => setViewMode('input')}
+                              disabled={inputStructures.length === 0}
+                              title='Data structures derived from test input'
+                            >
+                              Input
+                            </button>
+                          </div>
+                        }
+                      >
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          <Layers size={13} /> Data Structures
+                        </span>
+                      </SectionTitle>
+                      {displayedStructures.length > 0 ? (
+                        <DataStructureVisualizer structures={displayedStructures} />
+                      ) : (
+                        <div
+                          style={{
+                            border: `1px dashed var(--border)`,
+                            borderRadius: 8,
+                            padding: 18,
+                            color: 'var(--text-muted)',
+                            fontSize: 12,
+                            textAlign: 'center',
+                            background: 'var(--grain)',
+                          }}
+                        >
+                          No data structures detected for this view.
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Console sub-tab */}
+                  {traceSubTab === 'console' && (
+                    <div style={{ maxHeight: 'calc(100vh - 400px)', overflow: 'auto' }}>
+                      <SectionTitle
+                        hint={`${visibleOutputs.length} line(s) · ${newOutputCount} new this step`}
+                        action={
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <div className='segmented'>
+                              <button
+                                type='button'
+                                className='seg-btn active'
+                              >
+                                All output
+                              </button>
+                            </div>
+                            <button
+                              type='button'
+                              className='icon-btn small'
+                              onClick={() => void handleCopyConsole()}
+                              disabled={visibleOutputs.length === 0}
+                              title={consoleCopied ? 'Console copied' : 'Copy visible console output'}
+                              aria-label='Copy visible console output'
+                            >
+                              {consoleCopied ? <Check size={12} /> : <Copy size={12} />}
+                            </button>
+                          </div>
+                        }
+                      >
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          <Terminal size={13} /> Console
+                        </span>
+                      </SectionTitle>
+                      <div
+                        style={{
+                          display: 'flex',
+                          gap: 10,
+                          flexWrap: 'wrap',
+                          marginBottom: 6,
+                          fontSize: 9.5,
+                          color: 'var(--text-muted)',
+                        }}
+                      >
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          <span style={{ width: 6, height: 6, borderRadius: 999, background: 'var(--text-muted)' }} />
+                          completed steps
+                        </span>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          <span style={{ width: 6, height: 6, borderRadius: 999, background: 'var(--green)' }} />
+                          this step
+                        </span>
+                      </div>
+                      <div
+                        ref={consoleRef}
+                        style={{
+                          background: 'var(--bg-inset)',
+                          border: '1px solid var(--border)',
+                          borderRadius: 8,
+                          padding: '8px 10px',
+                          maxHeight: 300,
+                          overflow: 'auto',
+                        }}
+                      >
+                        {visibleOutputs.length > 0 ? (
+                          visibleOutputs.map((line, index) => {
+                            const isCompleted = index < newOutputStart;
+                            const isCurrent = index >= newOutputStart && index < newOutputEnd;
+                            return (
+                              <div
+                                key={index}
+                                className={`output-line ${isCurrent ? 'current' : isCompleted ? 'completed' : ''}`}
+                              >
+                                <span
+                                  className='marker'
+                                  style={{
+                                    color: isCurrent
+                                      ? 'var(--green)'
+                                      : isCompleted
+                                        ? 'var(--text-muted)'
+                                        : 'var(--border-strong)',
+                                  }}
+                                >
+                                  {isCurrent ? '+' : '›'}
+                                </span>
+                                <span>{line}</span>
+                                {outputProducers[index] !== undefined && (
+                                  <button
+                                    type='button'
+                                    className='output-step'
+                                    onClick={() => onSeek?.(outputProducers[index])}
+                                    title={`Produced at step ${outputProducers[index] + 1} — click to jump there`}
+                                  >
+                                    step {outputProducers[index] + 1}
+                                  </button>
+                                )}
+                                {isCurrent && (
+                                  <span
+                                    style={{
+                                      marginLeft: 2,
+                                      fontSize: 8.5,
+                                      color: 'var(--green)',
+                                      letterSpacing: 0.5,
+                                      textTransform: 'uppercase',
+                                      flexShrink: 0,
+                                    }}
+                                  >
+                                    new
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })
+                        ) : (
+                          <span style={{ color: 'var(--text-muted)', fontSize: 11.5 }}>
+                            {outputs.length > 0
+                              ? 'No console output for this step yet.'
+                              : 'No console output yet. Use console.log() / print() to write values here.'}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Call Stack sub-tab */}
+                  {traceSubTab === 'callstack' && (
+                    <div style={{ maxHeight: 'calc(100vh - 400px)', overflow: 'auto' }}>
+                      <SectionTitle hint='Synchronous call stack (top of stack first)'>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          <Workflow size={13} /> Call Stack
+                        </span>
+                      </SectionTitle>
+                      {currentStep.callStack && currentStep.callStack.length > 0 ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                          {[...currentStep.callStack].reverse().map((frame, idx) => (
+                            <div
+                              key={`${frame.name}-${idx}`}
+                              style={{
+                                display: 'flex',
+                                gap: 8,
+                                alignItems: 'baseline',
+                                padding: '5px 9px',
+                                background: idx === 0 ? 'var(--bg-active)' : 'var(--bg-panel)',
+                                border: `1px solid ${idx === 0 ? 'var(--accent-border)' : 'var(--border-subtle)'}`,
+                                borderRadius: 6,
+                                fontSize: 11.5,
+                                fontFamily: 'monospace',
+                              }}
+                            >
+                              <span
+                                style={{
+                                  color:
+                                    frame.frameType === 'microtask'
+                                      ? 'var(--purple)'
+                                      : frame.frameType === 'macrotask'
+                                      ? 'var(--orange)'
+                                      : idx === 0
+                                      ? 'var(--text-strong)'
+                                      : 'var(--info)',
+                                }}
+                              >
+                                {frame.name}()
+                                {frame.frameType === 'microtask' && <span className='chip' style={{ color: 'var(--purple)', fontSize: 8 }}>microtask</span>}
+                                {frame.frameType === 'macrotask' && <span className='chip' style={{ color: 'var(--orange)', fontSize: 8 }}>macrotask</span>}
+                              </span>
+                              {frame.args && (
+                                <span
+                                  style={{
+                                    color: 'var(--text-muted)',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
                                     whiteSpace: 'nowrap',
                                   }}
                                 >
-                                  {changed && (
-                                    <span
-                                      title='changed since the completed step'
-                                      style={{ color: 'var(--yellow)', marginRight: 4 }}
-                                    >
-                                      ●
-                                    </span>
-                                  )}
-                                  {entry.name}
-                                  {added && (
-                                    <span
-                                      className='chip chip-accent'
-                                      style={{ marginLeft: 5 }}
-                                      title='added since the completed step'
-                                    >
-                                      new
-                                    </span>
-                                  )}
-                                  {removed && (
-                                    <span
-                                      className='chip chip-red'
-                                      style={{ marginLeft: 5 }}
-                                      title='no longer in scope at the current step'
-                                    >
-                                      gone
-                                    </span>
-                                  )}
-                                </td>
-                                <td
-                                  style={{
-                                    fontFamily: 'monospace',
-                                    fontSize: 11,
-                                    color: 'var(--text-muted)',
-                                    wordBreak: 'break-all',
-                                    maxWidth: 170,
-                                    opacity: entry.previous ? 1 : 0.5,
-                                  }}
-                                  title={entry.previous ? formatValue(entry.previous.value, entry.previous.display) : 'not in scope'}
-                                >
-                                  {entry.previous
-                                    ? formatValue(entry.previous.value, entry.previous.display)
-                                    : '—'}
-                                </td>
-                                <td
-                                  style={{
-                                    fontFamily: 'monospace',
-                                    fontSize: 11,
-                                    color: changed
-                                      ? 'var(--yellow)'
-                                      : entry.current
-                                        ? 'var(--orange)'
-                                        : 'var(--text-muted)',
-                                    wordBreak: 'break-all',
-                                    maxWidth: 170,
-                                    opacity: entry.current ? 1 : 0.6,
-                                  }}
-                                  title={entry.current ? formatValue(entry.current.value, entry.current.display) : 'out of scope'}
-                                >
-                                  {entry.current
-                                    ? formatValue(entry.current.value, entry.current.display)
-                                    : '—'}
-                                </td>
-                                <td style={{ color: 'var(--green)', fontSize: 10 }}>
-                                  {typeSource?.type ?? '—'}
-                                </td>
-                                <td style={{ color: 'var(--text-muted)', fontSize: 10 }}>
-                                  {typeSource ? SCOPE_LABEL[typeSource.scope || 'local'] : '—'}
-                                </td>
-                              </tr>
-                            );
-                          })
-                        : visibleVariables.map((variable) => (
-                            <tr key={`${variable.scope || 'local'}-${variable.name}`}>
-                              <td
+                                  {frame.args}
+                                </span>
+                              )}
+                              {frame.asyncSource && (
+                                <span style={{ color: 'var(--text-muted)', fontSize: 10, marginLeft: 4 }}>
+                                  via {frame.asyncSource}
+                                </span>
+                              )}
+                              <span style={{ marginLeft: 'auto', color: 'var(--text-muted)' }}>L{frame.line}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div
+                          style={{
+                            border: `1px dashed var(--border)`,
+                            borderRadius: 8,
+                            padding: 18,
+                            color: 'var(--text-muted)',
+                            fontSize: 12,
+                            textAlign: 'center',
+                            background: 'var(--grain)',
+                          }}
+                        >
+                          No call stack at this step.
+                        </div>
+                      )}
+
+                      {currentStep.microtaskQueue && currentStep.microtaskQueue.length > 0 && (
+                        <>
+                          <SectionTitle hint='Microtask queue (Promise callbacks, queueMicrotask)' emphasis>
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                              <Sparkles size={13} style={{ color: 'var(--purple)' }} /> Microtasks
+                            </span>
+                          </SectionTitle>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                            {currentStep.microtaskQueue.map((frame, idx) => (
+                              <div
+                                key={`microtask-${frame.name}-${idx}`}
                                 style={{
-                                  color: 'var(--info)',
+                                  display: 'flex',
+                                  gap: 8,
+                                  alignItems: 'baseline',
+                                  padding: '5px 9px',
+                                  background: 'var(--purple-soft)',
+                                  border: '1px solid var(--purple-border)',
+                                  borderRadius: 6,
+                                  fontSize: 11.5,
                                   fontFamily: 'monospace',
-                                  fontWeight: 600,
-                                  whiteSpace: 'nowrap',
                                 }}
                               >
-                                {variable.changed && (
+                                <span style={{ color: 'var(--purple)' }}>{frame.name}</span>
+                                {frame.args && (
                                   <span
-                                    title='changed since last step'
-                                    style={{ color: 'var(--yellow)', marginRight: 4 }}
+                                    style={{
+                                      color: 'var(--text-muted)',
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis',
+                                      whiteSpace: 'nowrap',
+                                    }}
                                   >
-                                    ●
+                                    {frame.args}
                                   </span>
                                 )}
-                                {variable.name}
-                              </td>
-                              <td
-                                style={{
-                                  padding: '6px 9px',
-                                  color: variable.changed ? 'var(--yellow)' : 'var(--orange)',
-                                  fontSize: 11,
-                                  fontFamily: 'monospace',
-                                  wordBreak: 'break-all',
-                                  maxWidth: 220,
-                                }}
-                                title={formatValue(variable.value, variable.display)}
-                              >
-                                {formatValue(variable.value, variable.display)}
-                              </td>
-                              <td style={{ color: 'var(--green)', fontSize: 10 }}>{variable.type}</td>
-                              <td style={{ color: 'var(--text-muted)', fontSize: 10 }}>
-                                {SCOPE_LABEL[variable.scope || 'local']}
-                              </td>
-                            </tr>
-                          ))}
-                      {(showCompare ? visibleCompared.length : visibleVariables.length) === 0 && (
-                        <tr>
-                          <td
-                            colSpan={showCompare ? 5 : 4}
-                            style={{
-                              padding: 10,
-                              color: 'var(--text-muted)',
-                              textAlign: 'center',
-                              fontSize: 11,
-                            }}
-                          >
-                            No variables in scope
-                          </td>
-                        </tr>
+                                <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: 10 }}>
+                                  {frame.asyncSource}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </>
                       )}
-                    </tbody>
-                  </table>
-                </div>
 
-                {structures.length > 0 && (
-                  <>
-                    <SectionTitle hint='live snapshot'>Quick structure preview</SectionTitle>
-                    <DataStructureVisualizer structures={structures} compact />
-                  </>
-                )}
-
-                <SectionTitle
-                  hint={`${visibleOutputs.length} line(s) · ${newOutputCount} new this step`}
-                  action={
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <div className='segmented'>
-                        <button
-                          type='button'
-                          className={`seg-btn${consoleScope === 'all' ? ' active' : ''}`}
-                          onClick={() => setConsoleScope('all')}
-                        >
-                          All output
-                        </button>
-                        <button
-                          type='button'
-                          className={`seg-btn${consoleScope === 'upto' ? ' active' : ''}`}
-                          onClick={() => setConsoleScope('upto')}
-                        >
-                          Up to step
-                        </button>
-                      </div>
-                      <button
-                        type='button'
-                        className='icon-btn small'
-                        onClick={() => void handleCopyConsole()}
-                        disabled={visibleOutputs.length === 0}
-                        title={consoleCopied ? 'Console copied' : 'Copy visible console output'}
-                        aria-label='Copy visible console output'
-                      >
-                        {consoleCopied ? <Check size={12} /> : <Copy size={12} />}
-                      </button>
-                    </div>
-                  }
-                >
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                    <Terminal size={13} /> Console
-                  </span>
-                </SectionTitle>
-                <div
-                  style={{
-                    display: 'flex',
-                    gap: 10,
-                    flexWrap: 'wrap',
-                    marginBottom: 6,
-                    fontSize: 9.5,
-                    color: 'var(--text-muted)',
-                  }}
-                >
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                    <span style={{ width: 6, height: 6, borderRadius: 999, background: 'var(--text-muted)' }} />
-                    completed steps
-                  </span>
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                    <span style={{ width: 6, height: 6, borderRadius: 999, background: 'var(--green)' }} />
-                    this step
-                  </span>
-                  {consoleScope === 'all' && (
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                      <span
-                        style={{
-                          width: 6,
-                          height: 6,
-                          borderRadius: 999,
-                          background: 'transparent',
-                          border: '1px solid var(--text-muted)',
-                        }}
-                      />
-                      later steps
-                    </span>
-                  )}
-                </div>
-                <div
-                  ref={consoleRef}
-                  style={{
-                    background: 'var(--bg-inset)',
-                    border: '1px solid var(--border)',
-                    borderRadius: 8,
-                    padding: '8px 10px',
-                    maxHeight: 170,
-                    overflow: 'auto',
-                  }}
-                >
-                  {visibleOutputs.length > 0 ? (
-                    visibleOutputs.map((line, index) => {
-                      const isCompleted = index < newOutputStart;
-                      const isCurrent = index >= newOutputStart && index < newOutputEnd;
-                      const isLater = index >= newOutputEnd;
-                      return (
-                        <div
-                          key={index}
-                          className={`output-line ${isCurrent ? 'current' : isCompleted ? 'completed' : ''}`}
-                          style={isLater ? { opacity: 0.42, color: 'var(--text-muted)' } : undefined}
-                        >
-                          <span
-                            className='marker'
-                            style={{
-                              color: isCurrent
-                                ? 'var(--green)'
-                                : isCompleted
-                                  ? 'var(--text-muted)'
-                                  : 'var(--border-strong)',
-                            }}
-                          >
-                            {isCurrent ? '+' : '›'}
-                          </span>
-                          <span>{line}</span>
-                          {outputProducers[index] !== undefined && (
-                            <button
-                              type='button'
-                              className='output-step'
-                              onClick={() => onSeek?.(outputProducers[index])}
-                              title={`Produced at step ${outputProducers[index] + 1} — click to jump there`}
-                            >
-                              step {outputProducers[index] + 1}
-                            </button>
-                          )}
-                          {isCurrent && (
-                            <span
-                              style={{
-                                marginLeft: 2,
-                                fontSize: 8.5,
-                                color: 'var(--green)',
-                                letterSpacing: 0.5,
-                                textTransform: 'uppercase',
-                                flexShrink: 0,
-                              }}
-                            >
-                              new
+                      {currentStep.macrotaskQueue && currentStep.macrotaskQueue.length > 0 && (
+                        <>
+                          <SectionTitle hint='Macrotask queue (setTimeout, setInterval, I/O)' emphasis>
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                              <Clock size={13} style={{ color: 'var(--orange)' }} /> Macrotasks
                             </span>
-                          )}
-                        </div>
-                      );
-                    })
-                  ) : (
-                    <span style={{ color: 'var(--text-muted)', fontSize: 11.5 }}>
-                      {outputs.length > 0
-                        ? `No output up to step ${safeIndex + 1} yet — ${outputs.length} line(s) belong to later steps. Switch to “All output” to preview them.`
-                        : 'No console output yet. Use console.log() / print() to write values here.'}
-                    </span>
-                  )}
-                </div>
+                          </SectionTitle>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                            {currentStep.macrotaskQueue.map((frame, idx) => (
+                              <div
+                                key={`macrotask-${frame.name}-${idx}`}
+                                style={{
+                                  display: 'flex',
+                                  gap: 8,
+                                  alignItems: 'baseline',
+                                  padding: '5px 9px',
+                                  background: 'var(--orange-soft)',
+                                  border: '1px solid var(--orange-border)',
+                                  borderRadius: 6,
+                                  fontSize: 11.5,
+                                  fontFamily: 'monospace',
+                                }}
+                              >
+                                <span style={{ color: 'var(--orange)' }}>{frame.name}</span>
+                                {frame.args && (
+                                  <span
+                                    style={{
+                                      color: 'var(--text-muted)',
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis',
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                  >
+                                    {frame.args}
+                                  </span>
+                                )}
+                                <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: 10 }}>
+                                  {frame.asyncSource}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      )}
 
-                {returnValue && (
-                  <>
-                    <SectionTitle>Final return value</SectionTitle>
-                    <div
-                      style={{
-                        padding: '8px 10px',
-                        background: 'var(--bg-panel)',
-                        border: '1px solid var(--border)',
-                        borderRadius: 7,
-                        color: 'var(--green)',
-                        fontFamily: 'monospace',
-                        fontSize: 11.5,
-                        wordBreak: 'break-all',
-                      }}
-                    >
-                      {formatValue(returnValue.value, returnValue.display)}
+                      {!currentStep.callStack?.length && !currentStep.microtaskQueue?.length && !currentStep.macrotaskQueue?.length && (
+                        <div
+                          style={{
+                            border: `1px dashed var(--border)`,
+                            borderRadius: 8,
+                            padding: 18,
+                            color: 'var(--text-muted)',
+                            fontSize: 12,
+                            textAlign: 'center',
+                            background: 'var(--grain)',
+                            marginTop: 16,
+                          }}
+                        >
+                          No async tasks scheduled at this step.
+                        </div>
+                      )}
                     </div>
-                  </>
-                )}
+                  )}
+
+                </div>
               </>
             ) : (
               <div style={{ marginTop: 16 }}>
                 <EmptyState title='No execution trace yet'>
-                  Press <strong style={{ color: 'var(--accent)' }}>Run &amp; Trace</strong> to interpret
+                  Press <strong style={{ color: 'var(--accent)' }}>Run & Trace</strong> to interpret
                   your program. Every loop iteration, branch and recursive call becomes a step you can
                   replay.
                 </EmptyState>
@@ -1838,7 +2181,7 @@ const DebuggerPanel: React.FC<DebuggerPanelProps> = ({
                       fontSize: 11.5,
                     }}
                   >
-                    {category} ({count})
+                    {CATEGORY_LABEL[category as ASTNodeInfo['category']] || category} ({count})
                   </button>
                 );
               })}
@@ -1847,69 +2190,54 @@ const DebuggerPanel: React.FC<DebuggerPanelProps> = ({
             {filteredAst.length === 0 ? (
               <EmptyState title='No AST nodes'>Run a trace to inspect the syntax tree.</EmptyState>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                {filteredAst.slice(0, 140).map((node, index) => (
-                  <div
-                    key={`${node.line}-${node.type}-${index}`}
-                    style={{
-                      display: 'flex',
-                      gap: 9,
-                      alignItems: 'center',
-                      padding: '6px 9px',
-                      background: 'var(--bg-panel)',
-                      border: '1px solid var(--border-subtle)',
-                      borderRadius: 6,
-                      fontSize: 12,
-                    }}
-                  >
-                    <span
-                      style={{
-                        padding: '2px 7px',
-                        borderRadius: 4,
-                        background: 'var(--bg-inset)',
-                        color: categoryColor(node.category),
-                        border: `1px solid ${categoryColor(node.category)}`,
-                        fontWeight: 800,
-                        fontSize: 10,
-                        textTransform: 'uppercase',
-                        letterSpacing: 0.4,
-                        minWidth: 74,
-                        textAlign: 'center',
-                      }}
-                    >
-                      {node.category}
-                    </span>
-                    <span style={{ color: 'var(--accent)', fontFamily: 'monospace', minWidth: 46, fontWeight: 600 }}>
-                      L{node.line}
-                    </span>
-                    <span
-                      style={{
-                        color: 'var(--yellow)',
-                        fontFamily: 'monospace',
-                        minWidth: 122,
-                        fontSize: 11.5,
-                        fontWeight: 600,
-                      }}
-                    >
-                      {node.type}
-                    </span>
-                    <span
-                      style={{
-                        color: 'var(--text-secondary)',
-                        flex: 1,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                        fontSize: 11.5,
-                      }}
-                    >
-                      {node.details}
-                    </span>
-                    {node.depth !== undefined && node.depth > 0 && (
-                      <span style={{ color: 'var(--purple)', fontSize: 10.5 }}>depth {node.depth}</span>
-                    )}
-                  </div>
-                ))}
+              <div style={{ overflowX: 'auto' }}>
+                <table className='data-table' style={{ minWidth: 600 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ minWidth: 80 }}>Category</th>
+                      <th style={{ minWidth: 50 }}>Line</th>
+                      <th style={{ minWidth: 140 }}>Type</th>
+                      <th>Details</th>
+                      <th style={{ minWidth: 70 }}>Depth</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredAst.slice(0, 140).map((node, index) => (
+                      <tr key={`${node.line}-${node.type}-${index}`} style={{ fontSize: 12 }}>
+                        <td style={{ textAlign: 'center' }}>
+                          <span
+                            style={{
+                              padding: '2px 7px',
+                              borderRadius: 4,
+                              background: 'var(--bg-inset)',
+                              color: categoryColor(node.category),
+                              border: `1px solid ${categoryColor(node.category)}`,
+                              fontWeight: 800,
+                              fontSize: 10,
+                              textTransform: 'uppercase',
+                              letterSpacing: 0.4,
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {CATEGORY_LABEL[node.category] || node.category}
+                          </span>
+                        </td>
+                        <td style={{ color: 'var(--accent)', fontFamily: 'monospace', fontWeight: 600 }}>
+                          L{node.line}
+                        </td>
+                        <td style={{ color: 'var(--yellow)', fontFamily: 'monospace', fontWeight: 600, fontSize: 11.5 }}>
+                          {node.type}
+                        </td>
+                        <td style={{ color: 'var(--text-secondary)', fontSize: 11.5 }}>
+                          {node.details}
+                        </td>
+                        <td style={{ color: 'var(--purple)', fontSize: 10.5, textAlign: 'center' }}>
+                          {node.depth !== undefined && node.depth > 0 ? node.depth : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>

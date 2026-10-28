@@ -16,6 +16,7 @@ import { PRESETS, PRESET_LOOKUP } from './utils/presets';
 import { LANGUAGE_TEMPLATES } from './utils/templates';
 import { buildShareUrl, readShareFromLocation } from './utils/share';
 import { copyText } from './utils/clipboard';
+import { validateLanguageMatch } from './utils/languageDetect';
 
 const DEFAULT_PRESET = 'two-sum';
 const SESSION_KEY = `${SITE.storagePrefix}:session`;
@@ -113,6 +114,8 @@ function App() {
     setIsRunning(true);
     await new Promise<void>((resolve) => setTimeout(resolve, 30));
     try {
+      // Validate language matches code
+      validateLanguageMatch(code, language as any);
       const analysis = analyzeAST(code, language);
       const trace = await generateTrace(code, testInput, language);
       const result: TraceResult = {
@@ -366,6 +369,13 @@ function App() {
 
   const handleDetectedLanguage = (detected: string) => {
     if (detected === language) return;
+    // Validate the detected language matches the code
+    try {
+      validateLanguageMatch(code, detected as any);
+    } catch {
+      // If validation fails, don't auto-switch
+      return;
+    }
     stopPlayback();
     setLanguage(detected);
     setPresetId('custom');
